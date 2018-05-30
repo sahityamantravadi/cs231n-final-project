@@ -2,8 +2,13 @@
 
 data_dir='/home/smantra/finalproject/data'
 eval_dir='/home/smantra/finalproject/eval'
+test_dir='/home/smantra/finalproject/test'
 total=($(wc -l <(ls $data_dir)))
-num_val=220
+num_val=200
+num_test=100
+num_train=(($total - $num_val - $num_test))
+
+echo 'Splitting '$total' examples into '$num_train' training, '$num_val' validation, and '$num_test' training examples.'
 
 val_files=$(ls $data_dir | shuf -n $num_val)
 
@@ -14,15 +19,10 @@ do
     mv $vfile $eval_dir
 done
 
-#for d in $data_site_dir/*;
-#do
-#  if [ -d "$d" ]; then
-#    echo "$d"
-#    for d2 in $d/*;
-#    do
-#        if [ -d "$d2" ]; then
-#            cp $d2/anat/*T1w.nii.gz $data_dir
-#        fi
-#    done
-#  fi
-#done
+test_files=$(ls $data_dir | shuf -n $num_test)
+for t in $test_files;
+do
+    echo $t
+    tfile=$data_dir'/'$t
+    mv $tfile $test_dir
+done
