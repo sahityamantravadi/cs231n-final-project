@@ -10,6 +10,7 @@ def model_fn(features, labels, mode, params):
     conv1 = tf.layers.conv3d(features, 32, 5,
                              activation=tf.nn.relu,
                              padding='valid')
+    print(tf.shape(conv1))
     conv1 = tf.layers.dropout(conv1, rate=0.3,
                               training=(mode == tf.estimator.ModeKeys.TRAIN))
     
@@ -22,6 +23,7 @@ def model_fn(features, labels, mode, params):
     conv2 = tf.layers.conv3d(conv1, 52, 5,
                              activation=tf.nn.relu,
                              padding='valid')
+    print(tf.shape(conv1))
     conv2 = tf.layers.dropout(conv2, rate=0.3,
                               training=(mode == tf.estimator.ModeKeys.TRAIN))
     conv2 = tf.layers.batch_normalization(conv2, epsilon=1e-5, momentum=0.1, training=True, gamma_initializer=tf.random_normal_initializer(1.0, 0.02))
@@ -46,7 +48,7 @@ def model_fn(features, labels, mode, params):
     if mode == tf.estimator.ModeKeys.PREDICT:
         return tf.estimator.EstimatorSpec(mode=mode, predictions=pred_classes)
     else:
-        qc_labels = labels[0,:]
+        qc_labels, site_labels = labels
         loss_op = tf.reduce_mean(
             tf.nn.sparse_softmax_cross_entropy_with_logits(
                 logits=out, labels=qc_labels))

@@ -46,7 +46,7 @@ def model_fn(features, labels, mode, params):
     if mode == tf.estimator.ModeKeys.PREDICT:
         return tf.estimator.EstimatorSpec(mode=mode, predictions=pred_classes)
     else:
-        site_labels = labels[1,:]
+        qc_labels, site_labels = labels
         loss_op = tf.reduce_mean(
             tf.nn.sparse_softmax_cross_entropy_with_logits(
                 logits=out, labels=site_labels))

@@ -65,37 +65,60 @@ def _get_data(batch_size, src_folder, n_epochs, cache_prefix,
 
     data_ds = data_ds.map(_reshape_images, num_parallel_calls=nthreads)
 
-    def _get_label(path):
+    def _get_label(path, qc):
         path_str = path.decode('utf-8')
         subject_id = int (path_str.split(os.sep)[-1].split('_')[0].split('-')[1])
         df = pd.read_csv('/home/smantra/finalproject/y_abide.csv')
-        label = df[df.subject_id == subject_id].site_label
+        if qc:
+            label = df[df.subject_id == subject_id].qc_label
+        else:
+            label = df[df.subject_id == subject_id].site_label
         return np.int32(label)
 
-    labels_ds = paths_ds.map(
+#     labels_ds = paths_ds.map(
+#          lambda path: tuple(tf.py_func(_get_label,
+#                                        [path, class_type],
+#                                        [tf.int32], name="get_label")),
+#          num_parallel_calls=nthreads)
+    
+    qc_labels_ds = paths_ds.map(
         lambda path: tuple(tf.py_func(_get_label,
-                                      [path],
+                                      [path, True],
                                       [tf.int32], name="get_label")),
         num_parallel_calls=nthreads)
-
+    
+    site_labels_ds = paths_ds.map(
+        lambda path: tuple(tf.py_func(_get_label,
+                                      [path, False],
+                                      [tf.int32], name="get_label")),
+        num_parallel_calls=nthreads)
+    
     def _reshape_labels(labels):
         return tf.reshape(labels, [])
+    
+#     labels_ds = labels_ds.map(_reshape_labels, num_parallel_calls=nthreads)
 
-    labels_ds = labels_ds.map(_reshape_labels, num_parallel_calls=nthreads)
+    qc_labels_ds = qc_labels_ds.map(_reshape_labels, num_parallel_calls=nthreads)
+    site_labels_ds = site_labels_ds.map(_reshape_labels, num_parallel_calls=nthreads)
+    labels_ds = tf.data.Dataset.zip((qc_labels_ds, site_labels_ds))
+
+#    dataset = tf.data.Dataset.zip((data_ds, qc_labels_ds, site_labels_ds))
 
     dataset = tf.data.Dataset.zip((data_ds, labels_ds))
-
-    # Sanity check uncomment those lines to zero values for one label
-    # making the classfication task trivial
-    # def _zero(data, label):
-    #     return tf.multiply(data, tf.cast(label, tf.float32)), label
-    #
-    # dataset = dataset.map(_zero)
-
+    
+#     if balance_dataset:
+#         #??????????????????????????????????????????????????????????????????????????
+#         # balance classes
+#         dataset = dataset.apply(tf.contrib.data.rejection_resample(lambda _, label: label,
+#                                                                    [0.5, 0.5]))
+#         # see https://stackoverflow.com/a/47056930/616300
+#         dataset = dataset.map(lambda _, data : (data))
+    
     if cache_prefix:
         dataset = dataset.cache(cache_prefix)
 
-    dataset = dataset.batch(batch_size)
+    dataset = dataset.apply(tf.contrib.data.batch_and_drop_remainder(batch_size))
+#    dataset = dataset.batch(batch_size)
     if shuffle:
         dataset = dataset.apply(tf.contrib.data.shuffle_and_repeat(buffer_size=100,
                                                                    count=n_epochs))
@@ -124,7 +147,8 @@ class Dataset_Pipeline:
                             cache_prefix=cache_prefix,
                             shuffle=shuffle,
                             target_shape=self.target_shape,
-                            balance_dataset=balance_dataset)
+                            balance_dataset=balance_dataset,
+                           )
         # You can use feedable iterators with a variety of different kinds of iterator
         # (such as one-shot and initializable iterators).
         training_iterator = dataset.make_one_shot_iterator()
