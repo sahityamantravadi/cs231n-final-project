@@ -22,10 +22,13 @@ ndf = 16 #number of discriminator filters in first conv layer
 seed = 123
 lr = 0.00005 #initial learning rate for adam
 beta1 = 0.5 #momentum term of adam"
+dropout = 0.5
+label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/image_labels.txt'
 
-def save_batch(pre, post, epoch, step):
-    pre_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/pre_epoch{}_step{}'.format(epoch, step)
-    post_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/post_epoch{}_step{}'.format(epoch, step)
+def save_batch(pre, qc_lab, site_lab, post, epoch, step, lab_file):
+    im_base = 'epoch{}_step{}'.format(epoch, step)
+    pre_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/pre_{}'.format(im_base)
+    post_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/post_{}'.format(im_base)
     for i in range(4):
         pre_file = pre_out_base + '_img{}.nii.gz'.format(i + 1)
         post_file = post_out_base + '_img{}.nii.gz'.format(i + 1)
@@ -33,27 +36,31 @@ def save_batch(pre, post, epoch, step):
         nb.save(pre_img, pre_file)
         post_img = nb.Nifti1Image(post[i,:,:,:], np.eye(4))
         nb.save(post_img, post_file)
+        
+        with open(lab_file, "a") as lf:
+            imnum_base = '{}_img{}'.format(im_base, i)
+            lf.write(imnum_base + '\t' + str(qc_lab) + '\t' + str(site_lab))
     print('Saved images for epoch {}, step {}'.format(epoch, step))
 
 def lrelu(x, a=0.1):
     return tf.maximum(a*x, x)
 
 def G_conv(batch_input, out_channels):
-    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=(2, 2, 2), padding="valid")
+    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=2, padding="valid")
 
 def D_conv(batch_input, out_channels):
-    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=(1, 1, 1), padding="same")
+    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=1, padding="same")
 
 def D_max_pool(batch_input):
     return tf.layers.max_pooling3d(batch_input, 2, 2)
 
 def G_conv_transpose(batch_input, out_channels):
-    return tf.layers.conv3d_transpose(batch_input, out_channels, kernel_size=4, strides=(2, 2, 2), padding="valid")
+    return tf.layers.conv3d_transpose(batch_input, out_channels, kernel_size=4, strides=2, padding="valid")
 
 def batchnorm(batch_input):
     return tf.layers.batch_normalization(batch_input, epsilon=1e-5, momentum=0.1, training=True)
 
-def generator(G_in, G_out_channels):
+def generator(G_in):
     with tf.variable_scope("generator"):
         layers = []
         G_in = tf.expand_dims(G_in, -1)
@@ -98,18 +105,20 @@ def generator(G_in, G_out_channels):
                 decoder_output = G_conv_transpose(rectified, out_channels)
 
                 output = batchnorm(decoder_output)
+                output = tf.nn.dropout(output, keep_prob=1 - dropout)
                 
                 layers.append(output)
 
         # decoder_1
-#         with tf.variable_scope("decoder_1"):
-#             #dec_1_input = tf.concat([layers[-1], layers[0]], axis=4)
-#             dec_1_input = layers[-1]
-#             rectified = tf.nn.relu(dec_1_input)
-#             output = G_conv_transpose(rectified, G_out_channels)
-#             output = tf.tanh(output)
-#             layers.append(output)
-
+        with tf.variable_scope("decoder_1"):
+            #dec_1_input = tf.concat([layers[-1], layers[0]], axis=4)
+            dec_1_input = layers[-1]
+            rectified = tf.nn.relu(dec_1_input)
+            output = G_conv_transpose(rectified, 1)
+            output = tf.squeeze(output)
+            output = tf.tanh(output)
+            layers.append(output)
+        
         return layers[-1]
 
 def site_discriminator(D_input):
@@ -120,11 +129,11 @@ def site_discriminator(D_input):
         #D_input = tf.concat([discrim_inputs, discrim_targets], axis=4)
 
         # layer_1:
-#        D_input = tf.expand_dims(D_input, -1)
+        D_input = tf.expand_dims(D_input, -1)
         with tf.variable_scope("layer_1"):
-            convolved = D_conv(D_input, ndf)
-            pooled = D_max_pool(convolved)
-            rectified = lrelu(pooled, 0.1)
+            pooled = D_max_pool(D_input)
+            convolved = D_conv(pooled, ndf)
+            rectified = lrelu(convolved, 0.1)
             layers.append(rectified)
 
         # layer_2:
@@ -159,13 +168,13 @@ def qc_discriminator(D_input):
         layers = []
 
     #    D_input = tf.concat([discrim_inputs, discrim_targets], axis=4)
-    #    D_input = tf.expand_dims(D_input, -1)
+        D_input = tf.expand_dims(D_input, -1)
 
         # layer_1:
         with tf.variable_scope("layer_1"):
-            convolved = D_conv(D_input, ndf)
-            pooled = D_max_pool(convolved)
-            rectified = lrelu(pooled, 0.1)
+            pooled = D_max_pool(D_input)
+            convolved = D_conv(pooled, ndf)
+            rectified = lrelu(convolved, 0.1)
             layers.append(rectified)
 
         # layer_2:
@@ -199,8 +208,8 @@ qc_labels = tf.placeholder(np.int32, [4])
 site_labels = tf.placeholder(np.int32, [4])
 
 with tf.variable_scope("generator"):
-    debiased_channels = int(qc_labels.get_shape()[-1])
-    debiased = generator(features, debiased_channels)
+    #debiased_channels = int(qc_labels.get_shape()[-1])
+    debiased = generator(features)
 
 with tf.variable_scope("qc_discriminator"):
     qc_out = qc_discriminator(debiased)
@@ -309,14 +318,14 @@ def run_a_gan(sess, G_train_step, G_loss,\
                        site_labels : site_labs,                       
                       }
             devices = ['/gpu:0', '/gpu:1']
-            for d in devices:
-                with tf.device(d):
-                    _, G_loss_curr, G_loss_summary  = sess.run([G_train_step, G_loss, G_loss_scalar], feed_dict=feed_dict, options=ro)
-                    _, qc_D_loss_curr, qc_D_loss_summary = sess.run([qc_D_train_step, qc_D_loss, qc_D_loss_scalar], feed_dict=feed_dict, options=ro)
-                    _, site_D_loss_curr, site_D_loss_summary = sess.run([site_D_train_step, site_D_loss, site_D_loss_scalar], feed_dict=feed_dict, options=ro)
-                    train_writer.add_summary(G_loss_summary, epoch*200 + step)
-                    train_writer.add_summary(qc_D_loss_summary, epoch*200 + step)
-                    train_writer.add_summary(site_D_loss_summary, epoch*200 + step)
+            with tf.device(devices[0]):
+                _, G_loss_curr, G_loss_summary  = sess.run([G_train_step, G_loss, G_loss_scalar], feed_dict=feed_dict, options=ro)
+                _, qc_D_loss_curr, qc_D_loss_summary = sess.run([qc_D_train_step, qc_D_loss, qc_D_loss_scalar], feed_dict=feed_dict, options=ro)
+            with tf.device(devices[1]):
+                _, site_D_loss_curr, site_D_loss_summary = sess.run([site_D_train_step, site_D_loss, site_D_loss_scalar], feed_dict=feed_dict, options=ro)
+            train_writer.add_summary(G_loss_summary, epoch*200 + step)
+            train_writer.add_summary(qc_D_loss_summary, epoch*200 + step)
+            train_writer.add_summary(site_D_loss_summary, epoch*200 + step)
                     
             if (step % 50 == 0):
                 vfeats, (vqc_labs, vsite_labs) = sess.run(vds_batch, options=ro)
@@ -329,7 +338,7 @@ def run_a_gan(sess, G_train_step, G_loss,\
                 
                 print('Epoch: {}, Step: {}, qc_D: {:.4}, site_D: {:.4}, G:{:.4}'.format(epoch,step,qc_D_loss_curr,site_D_loss_curr,G_loss_curr))
                 print('Val Accuracy: QC {:.4}, Site {:.4}'.format(qc_acc_curr, site_acc_curr))
-                save_batch(vfeats, gen_out, epoch, step)
+                save_batch(vfeats, vqc_labs, vsite_labs, gen_out, epoch, step, label_file)
             elif (step % 10 == 0):
                 vfeats, (vqc_labs, vsite_labs) = sess.run(vds_batch, options=ro)
                 vfeed_dict={features: vfeats,
