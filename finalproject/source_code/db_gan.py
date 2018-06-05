@@ -23,15 +23,17 @@ seed = 123
 lr = 0.00005 #initial learning rate for adam
 beta1 = 0.5 #momentum term of adam"
 
-def save_batch(pre, post, epoch):
-    pre_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/pre_epoch{}'.format(epoch)
-    post_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/post_epoch{}'.format(epoch)
+def save_batch(pre, post, epoch, step):
+    pre_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/pre_epoch{}_step{}'.format(epoch, step)
+    post_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/post_epoch{}_step{}'.format(epoch, step)
     for i in range(4):
         pre_file = pre_out_base + '_img{}.nii.gz'.format(i + 1)
         post_file = post_out_base + '_img{}.nii.gz'.format(i + 1)
-        nb.save(pre[i,:,:,:], pre_file)
-        nb.save(post[i,:,:,:], post_file)
-    print('Saved images for epoch {}'.format(epoch))
+        pre_img = nb.Nifti1Image(pre[i,:,:,:], np.eye(4))
+        nb.save(pre_img, pre_file)
+        post_img = nb.Nifti1Image(post[i,:,:,:], np.eye(4))
+        nb.save(post_img, post_file)
+    print('Saved images for epoch {}, step {}'.format(epoch, step))
 
 def lrelu(x, a=0.1):
     return tf.maximum(a*x, x)
@@ -281,7 +283,7 @@ def run_a_gan(sess, G_train_step, G_loss,\
                                  )
     val_dataset = _get_data(batch_size=ds.batch_size,
                               src_folder=ds.eval_src_folder,
-                              n_epochs=1,
+                              n_epochs=10,
                               cache_prefix=ds.eval_cache_prefix,
                               shuffle=True,
                               target_shape=ds.target_shape,
@@ -315,20 +317,31 @@ def run_a_gan(sess, G_train_step, G_loss,\
                     train_writer.add_summary(G_loss_summary, epoch*200 + step)
                     train_writer.add_summary(qc_D_loss_summary, epoch*200 + step)
                     train_writer.add_summary(site_D_loss_summary, epoch*200 + step)
-            if (step % 10 == 0):
+                    
+            if (step % 50 == 0):
                 vfeats, (vqc_labs, vsite_labs) = sess.run(vds_batch, options=ro)
                 vfeed_dict={features: vfeats,
-                       qc_labels : vqc_labs,
-                       site_labels : vsite_labs,                       
-                      }
-                summary, qc_acc_curr, site_acc_curr = sess.run([merged, qc_acc, site_acc], feed_dict=vfeed_dict, options=ro)
+                   qc_labels : vqc_labs,
+                   site_labels : vsite_labs,                       
+                }
+                summary, qc_acc_curr, site_acc_curr, gen_out = sess.run([merged, qc_acc, site_acc, debiased], feed_dict=vfeed_dict, options=ro)
                 test_writer.add_summary(summary, epoch*200 + step)
-
+                
                 print('Epoch: {}, Step: {}, qc_D: {:.4}, site_D: {:.4}, G:{:.4}'.format(epoch,step,qc_D_loss_curr,site_D_loss_curr,G_loss_curr))
                 print('Val Accuracy: QC {:.4}, Site {:.4}'.format(qc_acc_curr, site_acc_curr))
-        gen_out = sess.run([debiased], options=ro)
-        save_batch(vfeats, gen_out, epoch)
-        
+                save_batch(vfeats, gen_out, epoch, step)
+            elif (step % 10 == 0):
+                vfeats, (vqc_labs, vsite_labs) = sess.run(vds_batch, options=ro)
+                vfeed_dict={features: vfeats,
+                   qc_labels : vqc_labs,
+                   site_labels : vsite_labs,                       
+                }
+                summary, qc_acc_curr, site_acc_curr = sess.run([merged, qc_acc, site_acc], feed_dict=vfeed_dict, options=ro)
+                test_writer.add_summary(summary, epoch*200 + step)
+                
+                print('Epoch: {}, Step: {}, qc_D: {:.4}, site_D: {:.4}, G:{:.4}'.format(epoch,step,qc_D_loss_curr,site_D_loss_curr,G_loss_curr))
+                print('Val Accuracy: QC {:.4}, Site {:.4}'.format(qc_acc_curr, site_acc_curr))
+                    
 def get_session():
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
