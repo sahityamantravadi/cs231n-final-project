@@ -5,15 +5,15 @@ from data_io import _get_data
 import numpy as np
 
 with tf.Session() as sess:
-    validation_dataset = _get_data(nthreads=4,
-                                   batch_size=10,
-                                   src_folder="/home/smantra/finalproject/data_small",
-                                   n_epochs=1,
-                                   cache_prefix=None,
-                                   shuffle=True,
-                                   target_shape=(32, 32, 32))
+    train_dataset = _get_data(nthreads=4,
+                              batch_size=10,
+                              src_folder="/home/smantra/finalproject/data_small",
+                              n_epochs=1,
+                              cache_prefix=None,
+                              shuffle=True,
+                              target_shape=(32, 32, 32))
     
-    validation_iterator = validation_dataset.make_one_shot_iterator()
+    ds_iterator = train_dataset.make_one_shot_iterator()
     filenames = []
     count = 0
 
@@ -25,9 +25,10 @@ with tf.Session() as sess:
     while True:
         try:
             print(count)
-            features, labels = sess.run(validation_iterator.get_next())
-            print(labels)
-            print(np.amax(features, axis=(1,2,3)))
+            features, labels = sess.run(ds_iterator.get_next())
+            qc, site = labels
+            print(qc)
+            print(site)
             count += 1
         except tf.errors.OutOfRangeError:
             break

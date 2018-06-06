@@ -106,13 +106,15 @@ def _get_data(batch_size, src_folder, n_epochs, cache_prefix,
 
     dataset = tf.data.Dataset.zip((data_ds, labels_ds))
     
-#     if balance_dataset:
+    if balance_dataset:
 #         #??????????????????????????????????????????????????????????????????????????
-#         # balance classes
-#         dataset = dataset.apply(tf.contrib.data.rejection_resample(lambda _, label: label,
-#                                                                    [0.5, 0.5]))
-#         # see https://stackoverflow.com/a/47056930/616300
-#         dataset = dataset.map(lambda _, data : (data))
+        # balance classes
+        dataset = dataset.apply(tf.contrib.data.rejection_resample(lambda _, label: label[0], [0.5, 0.5]))
+        # see https://stackoverflow.com/a/47056930/616300
+        dataset = dataset.map(lambda _, data : (data))
+#     datas, qc_labs, site_labs = dataset
+#     labels_ds = tf.data.Dataset.zip((qc_labs, site_labs))
+#     dataset = tf.data.Dataset.zip((datas, qc_labs))
     
     if cache_prefix:
         dataset = dataset.cache(cache_prefix)
@@ -159,7 +161,7 @@ class Dataset_Pipeline:
                                   src_folder=self.train_src_folder,
                                   shuffle=True,
                                   n_epochs=self.n_epochs,
-                                  balance_dataset=False)
+                                  balance_dataset=True)
 
     def eval_input_fn(self):
         return self._get_iterator(cache_prefix=self.eval_cache_prefix,
