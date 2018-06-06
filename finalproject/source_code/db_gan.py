@@ -1,7 +1,6 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-import datetime
 from glob import glob
 import math
 import matplotlib.pyplot as plt
@@ -16,20 +15,32 @@ import timeit
 import warnings
 from data_io import Dataset_Pipeline, _get_data
 
+batch_size=4
 EPS = 1e-12
-ngf = 8 #number of generator filters in first conv layer
-ndf = 16 #number of discriminator filters in first conv layer
+ngf = 32 #number of generator filters in first conv layer
+ndf = 32 #number of discriminator filters in first conv layer
 seed = 123
-lr = 0.00005 #initial learning rate for adam
+lr = 0.0005 #initial learning rate for adam
 beta1 = 0.5 #momentum term of adam"
-dropout = 0.5
-label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/image_labels.txt'
+dropout_g = 0.3
+dropout_d = 0.3
+QC_weight = 3.0
+Site_weight = 2.0
 
-def save_batch(pre, qc_lab, site_lab, post, epoch, step, lab_file):
+#train_dir = '/home/smantra/finalproject/logs/debiasing_GAN/train'
+#test_dir = '/home/smantra/finalproject/logs/debiasing_GAN/test'
+#label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/image_labels.txt'
+
+test_dir = '/home/smantra/finalproject/logs/debiasing_GAN/test_2conv'
+train_dir = '/home/smantra/finalproject/logs/debiasing_GAN/train_2conv'
+label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/2conv_image_labels.txt'
+
+
+def save_batch(pre, qc_lab, site_lab, post, qc_pred, site_pred, epoch, step, lab_file):
     im_base = 'epoch{}_step{}'.format(epoch, step)
     pre_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/pre_{}'.format(im_base)
     post_out_base = '/home/smantra/finalproject/logs/debiasing_GAN/images/post_{}'.format(im_base)
-    for i in range(4):
+    for i in range(batch_size):
         pre_file = pre_out_base + '_img{}.nii.gz'.format(i + 1)
         post_file = post_out_base + '_img{}.nii.gz'.format(i + 1)
         pre_img = nb.Nifti1Image(pre[i,:,:,:], np.eye(4))
@@ -39,184 +50,167 @@ def save_batch(pre, qc_lab, site_lab, post, epoch, step, lab_file):
         
         with open(lab_file, "a") as lf:
             imnum_base = '{}_img{}'.format(im_base, i)
-            lf.write(imnum_base + '\t' + str(qc_lab) + '\t' + str(site_lab))
+            lf.write(imnum_base + '\t' + str(qc_lab[i]) + '\t' + str(site_lab[i]) + '\t' + str(qc_pred[i]) + '\t' + str(site_pred[i]) + '\n')
     print('Saved images for epoch {}, step {}'.format(epoch, step))
 
 def lrelu(x, a=0.1):
     return tf.maximum(a*x, x)
 
-def G_conv(batch_input, out_channels):
-    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=2, padding="valid")
+def G_conv(batch_input, out_channels, val=True):
+    pad = 'valid' if val else 'same'
+    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=(2, 2, 2), padding=pad)
 
-def D_conv(batch_input, out_channels):
-    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=1, padding="same")
+def D_conv(batch_input, out_channels, val=False):
+    pad = 'valid' if val else 'same'
+    return tf.layers.conv3d(batch_input, out_channels, kernel_size=4, strides=1, padding=pad)
 
 def D_max_pool(batch_input):
     return tf.layers.max_pooling3d(batch_input, 2, 2)
 
-def G_conv_transpose(batch_input, out_channels):
-    return tf.layers.conv3d_transpose(batch_input, out_channels, kernel_size=4, strides=2, padding="valid")
+def G_conv_transpose(batch_input, out_channels, val=True):
+    pad = 'valid' if val else 'same'
+    return tf.layers.conv3d_transpose(batch_input, out_channels, kernel_size=4, strides=(2, 2, 2), padding=pad)
 
-def batchnorm(batch_input):
-    return tf.layers.batch_normalization(batch_input, epsilon=1e-5, momentum=0.1, training=True)
+def batchnorm(batch_input, is_training):
+    return tf.layers.batch_normalization(batch_input, epsilon=1e-5, momentum=0.1, training=is_training)
 
-def generator(G_in):
+def generator(G_in, training):
     with tf.variable_scope("generator"):
         layers = []
         G_in = tf.expand_dims(G_in, -1)
+        layers.append(G_in)
+        """
         # encoder_1
-        with tf.variable_scope("encoder_1"):
+        with tf.variable_scope("encoder"):
             conv_out = G_conv(G_in, ngf)
+            #rectified = lrelu(conv_out, 0.1)
             layers.append(conv_out)
-
-        layer_nfilters = [
-            ngf, # encoder_2
-            ngf * 2, # encoder_3
-            ngf * 4, # encoder_4
-        ]
-
-        for out_n in layer_nfilters:
-            with tf.variable_scope("encoder_%d" % (len(layers) + 1)):
-                rectified = lrelu(layers[-1], 0.1)
-                # [batch, in_height, in_width, in_channels] => [batch, in_height/2, in_width/2, out_channels]
-                convolved = G_conv(G_in, out_n)
-                output = batchnorm(convolved)
-                layers.append(output)
-
-        layer_specs = [
-#            ngf * 4,   # decoder_4
-#            ngf * 2,   # decoder_3
-            ngf,       # decoder_2
-        ]
-
-        num_encoder_layers = len(layers)
-        for decoder_layer, out_channels in enumerate(layer_specs):
-            skip_layer = num_encoder_layers - decoder_layer - 1
-            with tf.variable_scope("decoder_%d" % (skip_layer + 1)):
-    #             if decoder_layer == 0:
-    #                 # first decoder layer doesn't have skip connections
-    #                 # since it is directly connected to the skip_layer
-    #                 decoder_input = layers[-1]
-    #             else:
-    #                 decoder_input = tf.concat([layers[-1], layers[skip_layer]], axis=4)
-                decoder_input = layers[-1]
-                rectified = tf.nn.relu(decoder_input)
-
-                decoder_output = G_conv_transpose(rectified, out_channels)
-
-                output = batchnorm(decoder_output)
-                output = tf.nn.dropout(output, keep_prob=1 - dropout)
-                
-                layers.append(output)
-
-        # decoder_1
-        with tf.variable_scope("decoder_1"):
-            #dec_1_input = tf.concat([layers[-1], layers[0]], axis=4)
-            dec_1_input = layers[-1]
-            rectified = tf.nn.relu(dec_1_input)
-            output = G_conv_transpose(rectified, 1)
-            output = tf.squeeze(output)
+        """
+        with tf.variable_scope("conv"):
+            output = D_conv(layers[-1], ngf/2)
+            #rectified = tf.tanh(output)
+            rectified = lrelu(output, 0.1)
+            layers.append(rectified)
+            """
+            output1 = D_conv(layers[-1], ngf/4, False)
+            #rectified1 = lrelu(output1, 0.1)
+            rectified1 = tf.tanh(output1)
+            normalized1 = tf.cond(training, lambda : batchnorm(rectified1, True), lambda : batchnorm(rectified1, False))
+            layers.append(normalized1)
+            """
+            output2 = D_conv(layers[-1], 1, False)
+            rectified2 = lrelu(output2, 0.1)
+            #rectified2 = tf.tanh(output2)
+            normalized2 = tf.cond(training, lambda : batchnorm(rectified2, True), lambda : batchnorm(rectified2, False))
+            kept2 = tf.cond(training, lambda : tf.nn.dropout(normalized2, keep_prob=1 - dropout_g), lambda : normalized2)
+            layers.append(kept2)
+        """
+        with tf.variable_scope("decoder"):
+            output = G_conv_transpose(layers[-1], 1)
             output = tf.tanh(output)
             layers.append(output)
-        
+        """
+        squeezed = tf.squeeze(layers[-1])
+        layers.append(squeezed)
+        print(layers[-1].get_shape())
         return layers[-1]
 
-def site_discriminator(D_input):
+def site_discriminator(D_input, training):
     with tf.variable_scope("site_discriminator"):
         n_layers = 2
         layers = []
 
-        #D_input = tf.concat([discrim_inputs, discrim_targets], axis=4)
-
         # layer_1:
         D_input = tf.expand_dims(D_input, -1)
         with tf.variable_scope("layer_1"):
-            pooled = D_max_pool(D_input)
-            convolved = D_conv(pooled, ndf)
+            convolved = D_conv(D_input, ndf)
+            pooled = D_max_pool(convolved)
             rectified = lrelu(convolved, 0.1)
             layers.append(rectified)
 
         # layer_2:
         # layer_3:
-        # layer_4:
         for i in range(n_layers):
             with tf.variable_scope("layer_%d" % (len(layers) + 1)):
                 out_channels = ndf/(2*(i+1))
-
-                #stride = 1 if i == n_layers - 1 else 2  # last layer here has stride 1
                 convolved = D_conv(layers[-1], out_channels)
                 pooled = D_max_pool(convolved)
-                normalized = batchnorm(pooled)
-                rectified = lrelu(normalized, 0.1)
-                layers.append(rectified)
+                #normalized = batchnorm(pooled, training)
+                normalized = tf.cond(training, lambda : batchnorm(pooled, True), lambda : batchnorm(pooled, False))
+                out = lrelu(normalized, 0.1)
+                kept = tf.cond(training, lambda : tf.nn.dropout(out, keep_prob=1 - dropout_d), lambda : out)
+                #if training:
+                #    out = tf.nn.dropout(out, keep_prob=1 - dropout_d)
+                layers.append(kept)
 
         with tf.variable_scope("layer_%d" % (len(layers) + 1)):
-            convolved = D_conv(rectified, out_channels=1)
-            fc1 = tf.contrib.layers.flatten(convolved)
-#            fc1 = tf.layers.dense(fc1, 300)
+            convolved = D_conv(layers[-1], out_channels=1)
+            pooled = D_max_pool(convolved)
+            fc1 = tf.contrib.layers.flatten(pooled)
+#            fc1 = tf.layers.dense(fc1, 100)
 #            fc1 = lrelu(fc1)
-            # Output layer, class prediction
-            out = tf.layers.dense(fc1, 17)
+            kept = tf.cond(training, lambda : tf.nn.dropout(fc1, 1 - dropout_d), lambda : fc1)
+            #if training:
+            #    fc1 = tf.nn.dropout(fc1, keep_prob=1 - dropout_d)
+            out = tf.layers.dense(kept, 17)
             layers.append(out)
-    #         pred_classes = tf.argmax(out, axis=1)
-    #         layers.append(pred_classes)
         return layers[-1]
 
-def qc_discriminator(D_input):
+def qc_discriminator(D_input, training):
     with tf.variable_scope("qc_discriminator"):
         n_layers = 2
         layers = []
 
-    #    D_input = tf.concat([discrim_inputs, discrim_targets], axis=4)
         D_input = tf.expand_dims(D_input, -1)
 
         # layer_1:
         with tf.variable_scope("layer_1"):
-            pooled = D_max_pool(D_input)
-            convolved = D_conv(pooled, ndf)
+            convolved = D_conv(D_input, ndf)
+            pooled = D_max_pool(convolved)
             rectified = lrelu(convolved, 0.1)
             layers.append(rectified)
 
         # layer_2:
         # layer_3:
-        # layer_4:
         for i in range(n_layers):
             with tf.variable_scope("layer_%d" % (len(layers) + 1)):
                 out_channels = ndf/(2*(i+1))
-                #stride = 1 if i == n_layers - 1 else 2  # last layer here has stride 1
                 convolved = D_conv(layers[-1], out_channels)
                 pooled = D_max_pool(convolved)
-                normalized = batchnorm(pooled)
-                rectified = lrelu(normalized, 0.1)
-                layers.append(rectified)
+                #normalized = batchnorm(pooled, training)
+                normalized = tf.cond(training, lambda : batchnorm(pooled, True), lambda : batchnorm(pooled, False))
+                out = lrelu(normalized, 0.1)
+                kept = tf.cond(training, lambda : tf.nn.dropout(out, keep_prob=1 - dropout_d), lambda : out)
+                #if training:
+                #    out = tf.nn.dropout(out, keep_prob=1 - dropout_d)
+                layers.append(kept)
 
         with tf.variable_scope("layer_%d" % (len(layers) + 1)):
-            convolved = D_conv(rectified, out_channels=1)
-
-            fc1 = tf.contrib.layers.flatten(convolved)
-#            fc1 = tf.layers.dense(fc1, 300)
+            convolved = D_conv(layers[-1], out_channels=1)
+            pooled = D_max_pool(convolved)
+            fc1 = tf.contrib.layers.flatten(pooled)
+#            fc1 = tf.layers.dense(fc1, 100)
 #            fc1 = lrelu(fc1)
-            # Output layer, class prediction
-            out = tf.layers.dense(fc1, 2)
+            kept = tf.cond(training, lambda : tf.nn.dropout(fc1, 1 - dropout_d), lambda : fc1)
+            #if training:
+            #    fc1 = tf.nn.dropout(fc1, keep_prob=1 - dropout_d)
+            out = tf.layers.dense(kept, 2)
             layers.append(out)
-    #         pred_classes = tf.argmax(out, axis=1)
-    #         layers.append(pred_classes)
         return layers[-1]
     
-features = tf.placeholder(np.float32, [4, 106, 128, 110])
-qc_labels = tf.placeholder(np.int32, [4])
-site_labels = tf.placeholder(np.int32, [4])
+features = tf.placeholder(np.float32, [batch_size, 106, 128, 110])
+qc_labels = tf.placeholder(np.int32, [batch_size])
+site_labels = tf.placeholder(np.int32, [batch_size])
+training = tf.placeholder(tf.bool, name='training')
 
 with tf.variable_scope("generator"):
-    #debiased_channels = int(qc_labels.get_shape()[-1])
-    debiased = generator(features)
+    debiased = generator(features, training)
 
 with tf.variable_scope("qc_discriminator"):
-    qc_out = qc_discriminator(debiased)
-    x_in = tf.identity(qc_out)
+    qc_out = qc_discriminator(debiased, training)
 
 with tf.variable_scope("site_discriminator"):
-    site_out = site_discriminator(debiased)
+    site_out = site_discriminator(debiased, training)
 
 with tf.name_scope("predictions"):
     qc_preds = tf.cast(tf.argmax(qc_out, axis=1), tf.int32)
@@ -237,11 +231,11 @@ qc_D_solver = tf.train.AdamOptimizer(lr, beta1)
 G_solver = tf.train.AdamOptimizer(lr, beta1)
 
 with tf.name_scope("G_loss"):
-    G_loss = tf.abs(tf.reduce_mean(
+    G_loss = Site_weight * tf.reduce_mean(
         tf.nn.sparse_softmax_cross_entropy_with_logits(
-            logits=site_out, labels=site_labels)) - tf.reduce_mean(
+            logits=site_out, labels=site_labels)) - QC_weight * tf.reduce_mean(
             tf.nn.sparse_softmax_cross_entropy_with_logits(
-            logits=qc_out, labels=qc_labels)))
+            logits=qc_out, labels=qc_labels))
     G_loss_scalar = tf.summary.scalar('G_loss', G_loss)
 
 with tf.name_scope("QC_D_loss"):
@@ -268,54 +262,64 @@ def run_a_gan(sess, G_train_step, G_loss,\
               site_D_train_step, site_D_loss,\
               G_extra_step, qc_D_extra_step, site_D_extra_step,\
               num_epoch, train_writer, test_writer):
-    """Train a GAN for a certain number of epochs.
-    """
-    log_dir = "logs"
-    current_run_subdir = os.path.join(
-        "run_" + datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
-    model_dir = os.path.join(log_dir, 'dbGAN', '6012018')
-
-    ds = Dataset_Pipeline(target_shape=(106, 128, 110),
-                          n_epochs=10,
-                          train_src_folder="/home/smantra/finalproject/data/",
-                          train_cache_prefix="/home/smantra/finalproject/cache_train/",
-                          eval_src_folder="/home/smantra/finalproject/eval/",
-                          eval_cache_prefix="/home/smantra/finalproject/cache_eval/",
-                          batch_size=4
+    train_ds = Dataset_Pipeline(target_shape=(106, 128, 110),
+                                n_epochs=num_epoch,
+                                train_src_folder="/home/smantra/finalproject/data/",
+                                train_cache_prefix="/home/smantra/finalproject/cache_train/",
+                                eval_src_folder="/home/smantra/finalproject/eval/",
+                                eval_cache_prefix="/home/smantra/finalproject/cache_eval/",
+                                batch_size=batch_size
+                               )
+    val_ds = Dataset_Pipeline(target_shape=(106, 128, 110),
+                                n_epochs=num_epoch,
+                                train_src_folder="/home/smantra/finalproject/data/",
+                                train_cache_prefix="/home/smantra/finalproject/cache_train/",
+                                eval_src_folder="/home/smantra/finalproject/eval/",
+                                eval_cache_prefix="/home/smantra/finalproject/cache_eval/",
+                                batch_size=batch_size
                          )
-    train_dataset = _get_data(batch_size=ds.batch_size,
-                                  src_folder=ds.train_src_folder,
-                                  n_epochs=10,
-                                  cache_prefix=ds.train_cache_prefix,
-                                  shuffle=True,
-                                  target_shape=ds.target_shape,
-                                 )
-    val_dataset = _get_data(batch_size=ds.batch_size,
-                              src_folder=ds.eval_src_folder,
-                              n_epochs=10,
-                              cache_prefix=ds.eval_cache_prefix,
+    train_dataset = _get_data(batch_size=train_ds.batch_size,
+                              src_folder=train_ds.train_src_folder,
+                              n_epochs=num_epoch,
+                              cache_prefix=train_ds.train_cache_prefix,
                               shuffle=True,
-                              target_shape=ds.target_shape,
+                              target_shape=train_ds.target_shape,
+                              balance_dataset=True
                              )
+    val_dataset = _get_data(batch_size=val_ds.batch_size,
+                            src_folder=val_ds.eval_src_folder,
+                            n_epochs=1,
+                            cache_prefix=val_ds.eval_cache_prefix,
+                            shuffle=True,
+                            target_shape=val_ds.target_shape,
+                            balance_dataset=False
+                           )
 
 
-    ds_it = train_dataset.make_one_shot_iterator()
+    ds_it = train_dataset.make_initializable_iterator()
+    tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, ds_it.initializer)
+    sess.run(ds_it.initializer)
     next_batch = ds_it.get_next()
 
     vds_it = val_dataset.make_one_shot_iterator()
     vds_batch = vds_it.get_next()
-    
+    #vds_it = val_dataset.make_initializable_iterator()
+    #tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, vds_it.initializer)
+    #sess.run(vds_it.initializer)
+    #vds_batch = vds_it.get_next()
+
     ro = tf.RunOptions(report_tensor_allocations_upon_oom=True)
     print("Starting training:")
     
     for epoch in range(num_epoch):
-        for step in range(200):
+        for step in range(math.floor(801/batch_size)):
             #run a batch of data through the network
             feats, (qc_labs, site_labs) = sess.run(next_batch, options=ro)
             num_debiased_channels = int(qc_labels.get_shape()[-1])
             feed_dict={features: feats,
                        qc_labels : qc_labs,
-                       site_labels : site_labs,                       
+                       site_labels : site_labs,
+                       training : True
                       }
             devices = ['/gpu:0', '/gpu:1']
             with tf.device(devices[0]):
@@ -331,26 +335,33 @@ def run_a_gan(sess, G_train_step, G_loss,\
                 vfeats, (vqc_labs, vsite_labs) = sess.run(vds_batch, options=ro)
                 vfeed_dict={features: vfeats,
                    qc_labels : vqc_labs,
-                   site_labels : vsite_labs,                       
+                   site_labels : vsite_labs,
+                   training : False
                 }
-                summary, qc_acc_curr, site_acc_curr, gen_out = sess.run([merged, qc_acc, site_acc, debiased], feed_dict=vfeed_dict, options=ro)
+                summary, qc_acc_curr, site_acc_curr, gen_out, qc_p_curr, site_p_curr = sess.run([merged, qc_acc, site_acc, debiased, qc_preds, site_preds], feed_dict=vfeed_dict, options=ro)
                 test_writer.add_summary(summary, epoch*200 + step)
                 
                 print('Epoch: {}, Step: {}, qc_D: {:.4}, site_D: {:.4}, G:{:.4}'.format(epoch,step,qc_D_loss_curr,site_D_loss_curr,G_loss_curr))
                 print('Val Accuracy: QC {:.4}, Site {:.4}'.format(qc_acc_curr, site_acc_curr))
-                save_batch(vfeats, vqc_labs, vsite_labs, gen_out, epoch, step, label_file)
+                print('QC Labels: {}, QC Predictions: {}'.format(vqc_labs, qc_p_curr))
+                print('Site Labels: {}, Site Predictions: {}'.format(vsite_labs, site_p_curr))
+
+                save_batch(vfeats, vqc_labs, vsite_labs, gen_out, qc_p_curr, site_p_curr, epoch, step, label_file)
             elif (step % 10 == 0):
                 vfeats, (vqc_labs, vsite_labs) = sess.run(vds_batch, options=ro)
                 vfeed_dict={features: vfeats,
                    qc_labels : vqc_labs,
-                   site_labels : vsite_labs,                       
+                   site_labels : vsite_labs,
+                   training : False
                 }
-                summary, qc_acc_curr, site_acc_curr = sess.run([merged, qc_acc, site_acc], feed_dict=vfeed_dict, options=ro)
+                summary, qc_acc_curr, site_acc_curr, qc_p_curr, site_p_curr = sess.run([merged, qc_acc, site_acc, qc_preds, site_preds], feed_dict=vfeed_dict, options=ro)
                 test_writer.add_summary(summary, epoch*200 + step)
                 
                 print('Epoch: {}, Step: {}, qc_D: {:.4}, site_D: {:.4}, G:{:.4}'.format(epoch,step,qc_D_loss_curr,site_D_loss_curr,G_loss_curr))
                 print('Val Accuracy: QC {:.4}, Site {:.4}'.format(qc_acc_curr, site_acc_curr))
-                    
+                print('QC Labels: {}, QC Predictions: {}'.format(vqc_labs, qc_p_curr))
+                print('Site Labels: {}, Site Predictions: {}'.format(vsite_labs, site_p_curr))
+
 def get_session():
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
@@ -359,8 +370,8 @@ def get_session():
 
 with get_session() as sess:
     merged = tf.summary.merge_all()
-    train_writer = tf.summary.FileWriter('/home/smantra/finalproject/logs/debiasing_GAN/train', sess.graph)
-    test_writer = tf.summary.FileWriter('/home/smantra/finalproject/logs/debiasing_GAN/test')
+    train_writer = tf.summary.FileWriter(train_dir, sess.graph)
+    test_writer = tf.summary.FileWriter(test_dir)
 
     sess.run(tf.global_variables_initializer(), options=tf.RunOptions(report_tensor_allocations_upon_oom=True))
     run_a_gan(sess, G_train_step, G_loss,\
