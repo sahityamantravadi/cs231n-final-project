@@ -20,7 +20,7 @@ EPS = 1e-12
 ngf = 32 #number of generator filters in first conv layer
 ndf = 32 #number of discriminator filters in first conv layer
 seed = 123
-lr = 0.0005 #initial learning rate for adam
+lr = 0.00001 #initial learning rate for adam
 beta1 = 0.5 #momentum term of adam"
 dropout_g = 0.3
 dropout_d = 0.3
@@ -31,9 +31,9 @@ Site_weight = 2.0
 #test_dir = '/home/smantra/finalproject/logs/debiasing_GAN/test'
 #label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/image_labels.txt'
 
-test_dir = '/home/smantra/finalproject/logs/debiasing_GAN/test_2conv'
-train_dir = '/home/smantra/finalproject/logs/debiasing_GAN/train_2conv'
-label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/2conv_image_labels.txt'
+test_dir = '/home/smantra/finalproject/logs/debiasing_GAN/test_skip_conn'
+train_dir = '/home/smantra/finalproject/logs/debiasing_GAN/train_skip_conn'
+label_file = '/home/smantra/finalproject/logs/debiasing_GAN/images/skip_conn_image_labels.txt'
 
 
 def save_batch(pre, qc_lab, site_lab, post, qc_pred, site_pred, epoch, step, lab_file):
@@ -74,30 +74,41 @@ def G_conv_transpose(batch_input, out_channels, val=True):
 def batchnorm(batch_input, is_training):
     return tf.layers.batch_normalization(batch_input, epsilon=1e-5, momentum=0.1, training=is_training)
 
+def pad_up_to(t, max_in_dims, constant_values):
+    #https://stackoverflow.com/questions/42334646/tensorflow-pad-unknown-size-tensor-to-a-specific-size
+     s = tf.shape(t)
+     paddings = [[0, m-s[i]] for (i,m) in enumerate(max_in_dims)]
+     return tf.pad(t, paddings, 'CONSTANT', constant_values=constant_values)
+
 def generator(G_in, training):
     with tf.variable_scope("generator"):
         layers = []
         G_in = tf.expand_dims(G_in, -1)
         layers.append(G_in)
-        """
         # encoder_1
-        with tf.variable_scope("encoder"):
-            conv_out = G_conv(G_in, ngf)
+        with tf.variable_scope("encoder_1"):
+            conv_out1 = G_conv(G_in, ngf)
             #rectified = lrelu(conv_out, 0.1)
-            layers.append(conv_out)
+            layers.append(conv_out1)
+        # encoder_2
+        with tf.variable_scope("encoder_2"):
+            rectified2 = lrelu(layers[-1], 0.1)
+            conv_out2 = G_conv(rectified2, ngf*2)
+            normalized2 = tf.cond(training, lambda : batchnorm(conv_out2, True), lambda : batchnorm(conv_out2, False))
+            layers.append(normalized2)
         """
         with tf.variable_scope("conv"):
             output = D_conv(layers[-1], ngf/2)
             #rectified = tf.tanh(output)
             rectified = lrelu(output, 0.1)
             layers.append(rectified)
-            """
+            
             output1 = D_conv(layers[-1], ngf/4, False)
             #rectified1 = lrelu(output1, 0.1)
             rectified1 = tf.tanh(output1)
             normalized1 = tf.cond(training, lambda : batchnorm(rectified1, True), lambda : batchnorm(rectified1, False))
             layers.append(normalized1)
-            """
+            
             output2 = D_conv(layers[-1], 1, False)
             rectified2 = lrelu(output2, 0.1)
             #rectified2 = tf.tanh(output2)
@@ -105,14 +116,25 @@ def generator(G_in, training):
             kept2 = tf.cond(training, lambda : tf.nn.dropout(normalized2, keep_prob=1 - dropout_g), lambda : normalized2)
             layers.append(kept2)
         """
-        with tf.variable_scope("decoder"):
-            output = G_conv_transpose(layers[-1], 1)
-            output = tf.tanh(output)
+        with tf.variable_scope("decoder_2"):
+            rectified3 = tf.nn.relu(layers[-1])
+            convt_out3 = G_conv_transpose(rectified3, ngf)
+            normalized3 = tf.cond(training, lambda : batchnorm(convt_out3, True), lambda : batchnorm(convt_out3, False))
+            kept3 = tf.cond(training, lambda : tf.nn.dropout(normalized3, keep_prob=1 - dropout_g), lambda : normalized3)
+            layers.append(kept3)
+
+        with tf.variable_scope("decoder_1"):
+            #padded4 = pad_up_to(layers[-1], (4, 52, 63, 54, ngf), 0)
+            padded4 = tf.pad(layers[-1], [[0,0], [0,0], [1,0], [0,0], [0,0]])
+            dec_input4 = tf.concat([padded4, conv_out1], axis=4) #implementing skip connection
+            rectified4 = tf.nn.relu(dec_input4)
+            convt_out4 = G_conv_transpose(rectified4, 1)
+            output = tf.tanh(convt_out4)
             layers.append(output)
-        """
+        
         squeezed = tf.squeeze(layers[-1])
         layers.append(squeezed)
-        print(layers[-1].get_shape())
+        print(squeezed.get_shape())
         return layers[-1]
 
 def site_discriminator(D_input, training):
@@ -288,7 +310,7 @@ def run_a_gan(sess, G_train_step, G_loss,\
                              )
     val_dataset = _get_data(batch_size=val_ds.batch_size,
                             src_folder=val_ds.eval_src_folder,
-                            n_epochs=1,
+                            n_epochs=num_epoch,
                             cache_prefix=val_ds.eval_cache_prefix,
                             shuffle=True,
                             target_shape=val_ds.target_shape,
